@@ -2,28 +2,8 @@
 
 if [ ! -f /etc/ocserv/certs/server-key.pem ] || [ ! -f /etc/ocserv/certs/server-cert.pem ]; then
 	# Check environment variables
-	if [ -z "$CA_CN" ]; then
-		CA_CN="VPN CA"
-	fi
-
-	if [ -z "$CA_ORG" ]; then
-		CA_ORG="Big Corp"
-	fi
-
-	if [ -z "$CA_DAYS" ]; then
-		CA_DAYS=9999
-	fi
-
-	if [ -z "$SRV_CN" ]; then
+	if [ -z "$RADIUS_SERVER_NAME" ]; then
 		SRV_CN="www.example.com"
-	fi
-
-	if [ -z "$SRV_ORG" ]; then
-		SRV_ORG="MyCompany"
-	fi
-
-	if [ -z "$SRV_DAYS" ]; then
-		SRV_DAYS=9999
 	fi
 
 	# No certification found, generate one
@@ -31,10 +11,9 @@ if [ ! -f /etc/ocserv/certs/server-key.pem ] || [ ! -f /etc/ocserv/certs/server-
 	cd /etc/ocserv/certs
 	certtool --generate-privkey --outfile ca-key.pem
 	cat > ca.tmpl <<-EOCA
-	cn = "$CA_CN"
-	organization = "$CA_ORG"
+	cn = "Test CA"
 	serial = 1
-	expiration_days = $CA_DAYS
+	expiration_days = 9999
 	ca
 	signing_key
 	cert_signing_key
@@ -43,20 +22,29 @@ if [ ! -f /etc/ocserv/certs/server-key.pem ] || [ ! -f /etc/ocserv/certs/server-
 	certtool --generate-self-signed --load-privkey ca-key.pem --template ca.tmpl --outfile ca.pem
 	certtool --generate-privkey --outfile server-key.pem 
 	cat > server.tmpl <<-EOSRV
-	cn = "$SRV_CN"
-	organization = "$SRV_ORG"
-	expiration_days = $SRV_DAYS
+	cn = "${RADIUS_SERVER_NAME}"
+	expiration_days = 9999
 	signing_key
 	encryption_key
 	tls_www_server
 	EOSRV
 	certtool --generate-certificate --load-privkey server-key.pem --load-ca-certificate ca.pem --load-ca-privkey ca-key.pem --template server.tmpl --outfile server-cert.pem
+fi
 
-	# Create a test user
-	if [ -z "$NO_TEST_USER" ] && [ ! -f /etc/ocserv/ocpasswd ]; then
-		echo "Create test user 'test' with password 'test'"
-		echo 'test:Route,All:$5$DktJBFKobxCFd7wN$sn.bVw8ytyAaNamO.CvgBvkzDiFR6DaHdUzcif52KK7' > /etc/ocserv/ocpasswd
-	fi
+if test -n "$RADIUS_TESTUSER1";then
+	echo "${RADIUS_TESTUSER1} 	Cleartext-Password := \"${RADIUS_TESTPASS1}\"" >> /etc/raddb/users
+	echo "	Service-Type = Framed-User," >> /etc/raddb/users
+	echo "	Framed-Protocol = PPP," >> /etc/raddb/users
+	test -z $RADIUS_TESTUSER1_NET || echo "	Framed-Route = $RADIUS_TESTUSER1_NET," >> /etc/raddb/users
+	test -z $RADIUS_TESTUSER1_IP || echo "	Framed-IP-Address = $RADIUS_TESTUSER1_IP," >> /etc/raddb/users 
+	echo "	Framed-IP-Netmask = 255.255.255.0," >> /etc/raddb/users
+	test -z $RADIUS_TESTUSER1_GROUP || echo "	Class = \"$RADIUS_TESTUSER1_GROUP\"," >> /etc/raddb/users
+	echo "	Framed-MTU = 1500" >> /etc/raddb/users
+	echo "" >> /etc/raddb/users
+
+	sed -i 's|%NETWORK|'$RADIUS_TESTUSER1_NET'|g' /etc/ocserv/ocserv.conf
+else
+	sed -i 's|%NETWORK|'$RADIUS_NET'|g' /etc/ocserv/ocserv.conf
 fi
 
 # Open ipv4 ip forward
@@ -66,18 +54,18 @@ sysctl -w net.ipv4.ip_forward=1
 iptables -t nat -A POSTROUTING -j MASQUERADE
 iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
-test -z "$TESTUSER1" || echo $TESTPASS1|ocpasswd $TESTUSER1
-test -z "$TESTUSER2" || echo $TESTPASS2|ocpasswd $TESTUSER2
-test -z "$TESTUSER3" || echo $TESTPASS3|ocpasswd $TESTUSER3
-
 #run nuttcp
-#nuttcp -S
+if test -x /usr/bin/nuttcp;then
+nuttcp -S
+fi
 iperf -s &
 
-# Enable TUN device
+echo "Creating TUN device"
 mkdir -p /dev/net
 mknod /dev/net/tun c 10 200
 chmod 600 /dev/net/tun
+
+radiusd
 
 # Run OpennConnect Server
 exec "$@"
